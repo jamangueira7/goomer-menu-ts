@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: ESLint + Prettier
+        run: npm run lint
+      - name: Typecheck (tsc --noEmit)
+        run: npm run typecheck
+      - name: Arquitetura (dependency-cruiser)
+        run: npm run depcruise
+      - name: Esquema do Prisma
+        run: npx prisma validate
+        env:
+          DATABASE_URL: postgresql://goomer:goomer@localhost:5432/goomer
+
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      mailpit:
+        image: axllent/mailpit:v1.27
+        ports: ['1025:1025', '8025:8025']
+    env:
+      JWT_SECRET: ci-secret-com-pelo-menos-32-caracteres
+      MAILER_DSN: smtp://localhost:1025
+      MAILPIT_URL: http://localhost:8025
+      APP_RESET_URL: http://localhost:8091/reset-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Unitário
+        run: npx vitest run --project unit
+      - name: Caso de uso
+        run: npx vitest run --project usecase
+      - name: Integração (Postgres real via Testcontainers)
+        run: npx vitest run --project integration
+      - name: Ponta a ponta
+        run: npx vitest run --project e2e
+      - name: Cobertura de domain e application (>= 90%)
+        run: npm run coverage
