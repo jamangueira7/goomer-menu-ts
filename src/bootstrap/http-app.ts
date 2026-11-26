@@ -1,4 +1,5 @@
 import swagger from '@fastify/swagger';
+import { auditRoutes } from '../audit/http/audit-routes.js';
 import swaggerUi from '@fastify/swagger-ui';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { authRoutes } from '../auth/http/auth-routes.js';
@@ -55,6 +56,7 @@ export async function buildHttpApp(
         productRoutes(protectedScope, container.products);
         promotionRoutes(protectedScope, container.promotions);
         userRoutes(protectedScope, container.users);
+        auditRoutes(protectedScope, container.audit);
         done();
       });
     },

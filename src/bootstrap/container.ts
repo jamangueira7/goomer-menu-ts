@@ -1,3 +1,5 @@
+import { ListAuditLogsUseCase } from '../audit/application/list-audit-logs.js';
+import { PgAuditLog, PgAuditLogReader, PgTransactionManager } from '../audit/infrastructure/pg-audit.js';
 import { ForgotPasswordUseCase, LoginUseCase, ResetPasswordUseCase } from '../auth/application/auth-use-cases.js';
 import type { AccessTokens } from '../auth/application/ports.js';
 import { JoseAccessTokens } from '../auth/infrastructure/jose-access-tokens.js';
@@ -23,6 +25,7 @@ import {
   UpdatePromotionUseCase,
 } from '../promotion/application/promotion-use-cases.js';
 import { PgPromotionRepository } from '../promotion/infrastructure/pg-promotion-repository.js';
+import { Auditor } from '../shared/application/audit.js';
 import type { Clock } from '../shared/domain/clock.js';
 import { Database } from '../shared/infrastructure/database.js';
 import { SystemClock } from '../shared/infrastructure/system-clock.js';
@@ -51,12 +54,16 @@ export function createContainer(config: Config, overrides: Overrides = {}) {
   const resetTokens = new PgPasswordResetTokenRepository(database);
   const hasher = new Argon2idPasswordHasher();
   const accessTokens: AccessTokens = new JoseAccessTokens(config.jwtSecret, clock);
+  const restaurants = new PgRestaurantRepository(database);
+  // Toda escrita de negócio passa pelo Auditor: escrita e log de auditoria na mesma transação.
+  const auditor = new Auditor(new PgAuditLog(database, clock), new PgTransactionManager(database));
 
   return {
     config,
     database,
     accessTokens,
-    menu: new GetMenuUseCase(new PgRestaurantRepository(database), new PgMenuReader(database), clock),
+    menu: new GetMenuUseCase(restaurants, new PgMenuReader(database), clock),
+    audit: new ListAuditLogsUseCase(restaurants, users, new PgAuditLogReader(database), clock),
     auth: {
       login: new LoginUseCase(users, hasher, accessTokens),
       forgotPassword: new ForgotPasswordUseCase(
@@ -65,30 +72,31 @@ export function createContainer(config: Config, overrides: Overrides = {}) {
         new PgResetRequestThrottle(database),
         mailer,
         clock,
+        auditor,
         config.resetUrl,
       ),
-      resetPassword: new ResetPasswordUseCase(users, resetTokens, hasher, clock),
+      resetPassword: new ResetPasswordUseCase(users, resetTokens, hasher, clock, auditor),
     },
     products: {
       list: new ListProductsUseCase(products),
-      create: new CreateProductUseCase(products),
+      create: new CreateProductUseCase(products, auditor),
       get: new GetProductUseCase(products),
-      update: new UpdateProductUseCase(products),
-      visibility: new ChangeProductVisibilityUseCase(products),
-      reorder: new ReorderProductsUseCase(products),
-      delete: new DeleteProductUseCase(products),
+      update: new UpdateProductUseCase(products, auditor),
+      visibility: new ChangeProductVisibilityUseCase(products, auditor),
+      reorder: new ReorderProductsUseCase(products, auditor),
+      delete: new DeleteProductUseCase(products, promotions, auditor),
     },
     promotions: {
       list: new ListPromotionsUseCase(promotions),
-      create: new CreatePromotionUseCase(products, promotions),
+      create: new CreatePromotionUseCase(products, promotions, auditor),
       get: new GetPromotionUseCase(promotions),
-      update: new UpdatePromotionUseCase(products, promotions),
-      delete: new DeletePromotionUseCase(promotions),
+      update: new UpdatePromotionUseCase(products, promotions, auditor),
+      delete: new DeletePromotionUseCase(promotions, auditor),
     },
     users: {
       list: new ListUsersUseCase(users),
-      create: new CreateUserUseCase(users, hasher),
-      delete: new DeleteUserUseCase(users),
+      create: new CreateUserUseCase(users, hasher, auditor),
+      delete: new DeleteUserUseCase(users, auditor),
     },
     /** Fecha o SMTP e, se foi o container que abriu, o pool do banco. */
     async close(): Promise<void> {
