@@ -11,8 +11,15 @@ import {
 } from '../../src/promotion/application/promotion-use-cases.js';
 import { OverlappingPromotion, PromotionNotFound } from '../../src/promotion/domain/promotion.js';
 import { ValidationError } from '../../src/shared/domain/errors.js';
-import { InMemoryProductRepository, InMemoryPromotionRepository } from '../support/in-memory.js';
+import {
+  actorOf,
+  InMemoryAuditLog,
+  InMemoryProductRepository,
+  InMemoryPromotionRepository,
+} from '../support/in-memory.js';
 
+const admin = actorOf(1);
+const stranger = actorOf(2, 2, 'caio@izakaya.jp');
 const happyHour: PromotionData = {
   description: 'Happy hour',
   priceCents: 700,
@@ -22,20 +29,29 @@ const happyHour: PromotionData = {
 describe('casos de uso de promoção', () => {
   let products: InMemoryProductRepository;
   let promotions: InMemoryPromotionRepository;
+  let audit: InMemoryAuditLog;
   let create: CreatePromotionUseCase;
   let chopp: number;
 
   beforeEach(async () => {
     products = new InMemoryProductRepository();
     promotions = new InMemoryPromotionRepository(products);
-    create = new CreatePromotionUseCase(products, promotions);
+    audit = new InMemoryAuditLog();
+    create = new CreatePromotionUseCase(products, promotions, audit.auditor());
     chopp = (
-      await new CreateProductUseCase(products).execute(1, { name: 'Chopp', priceCents: 1400, category: 'bebidas' })
+      await new CreateProductUseCase(products, audit.auditor()).execute(admin, {
+        name: 'Chopp',
+        priceCents: 1400,
+        category: 'bebidas',
+      })
     ).id;
   });
 
-  it('cria e lê a promoção', async () => {
-    const created = await create.execute(1, chopp, happyHour);
+  const update = () => new UpdatePromotionUseCase(products, promotions, audit.auditor());
+  const remove = () => new DeletePromotionUseCase(promotions, audit.auditor());
+
+  it('cria e lê a promoção, com promotion.created no log', async () => {
+    const created = await create.execute(admin, chopp, happyHour);
 
     expect(created).toEqual({
       id: 1,
@@ -45,63 +61,76 @@ describe('casos de uso de promoção', () => {
       windows: [{ weekday: 3, start: '18:00', end: '20:00' }],
     });
     expect(await new GetPromotionUseCase(promotions).execute(1, created.id)).toEqual(created);
+    expect(audit.entries.at(-1)).toMatchObject({
+      action: 'promotion.created',
+      entityType: 'promotion',
+      entityId: created.id,
+      changes: { after: { productId: chopp, price: 700, windows: happyHour.windows } },
+    });
   });
 
-  it('janela sobreposta do mesmo produto é conflito', async () => {
-    await create.execute(1, chopp, happyHour);
+  it('janela sobreposta do mesmo produto é conflito, e a falha não grava log', async () => {
+    await create.execute(admin, chopp, happyHour);
 
     await expect(
-      create.execute(1, chopp, { ...happyHour, windows: [{ weekday: 3, start: '19:00', end: '21:00' }] }),
+      create.execute(admin, chopp, { ...happyHour, windows: [{ weekday: 3, start: '19:00', end: '21:00' }] }),
     ).rejects.toThrow(OverlappingPromotion);
+    expect(audit.actions()).toEqual(['product.created', 'promotion.created']);
   });
 
   it('preço maior ou igual ao normal é recusado', async () => {
-    await expect(create.execute(1, chopp, { ...happyHour, priceCents: 1400 })).rejects.toThrow(ValidationError);
+    await expect(create.execute(admin, chopp, { ...happyHour, priceCents: 1400 })).rejects.toThrow(ValidationError);
   });
 
   it('produto de outro restaurante não existe', async () => {
-    await expect(create.execute(2, chopp, happyHour)).rejects.toThrow(ProductNotFound);
+    await expect(create.execute(stranger, chopp, happyHour)).rejects.toThrow(ProductNotFound);
   });
 
   it('update pode manter as próprias janelas, mas não colidir com outras', async () => {
-    const first = await create.execute(1, chopp, happyHour);
-    const second = await create.execute(1, chopp, {
+    const first = await create.execute(admin, chopp, happyHour);
+    const second = await create.execute(admin, chopp, {
       ...happyHour,
       windows: [{ weekday: 4, start: '18:00', end: '20:00' }],
     });
-    const update = new UpdatePromotionUseCase(products, promotions);
 
-    const extended = await update.execute(1, first.id, {
+    const extended = await update().execute(admin, first.id, {
       ...happyHour,
       description: 'Estendido',
       windows: [{ weekday: 3, start: '17:00', end: '20:00' }],
     });
     expect(extended.description).toBe('Estendido');
+    expect(audit.entries.at(-1)?.changes).toEqual({
+      before: { description: 'Happy hour', windows: [{ weekday: 3, start: '18:00', end: '20:00' }] },
+      after: { description: 'Estendido', windows: [{ weekday: 3, start: '17:00', end: '20:00' }] },
+    });
     await expect(
-      update.execute(1, second.id, { ...happyHour, windows: [{ weekday: 3, start: '19:00', end: '19:30' }] }),
+      update().execute(admin, second.id, { ...happyHour, windows: [{ weekday: 3, start: '19:00', end: '19:30' }] }),
     ).rejects.toThrow(OverlappingPromotion);
-    await expect(update.execute(2, first.id, happyHour)).rejects.toThrow(PromotionNotFound);
+    await expect(update().execute(stranger, first.id, happyHour)).rejects.toThrow(PromotionNotFound);
   });
 
   it('lista com filtro e exclui', async () => {
-    const created = await create.execute(1, chopp, happyHour);
+    const created = await create.execute(admin, chopp, happyHour);
     const list = new ListPromotionsUseCase(promotions);
-    const remove = new DeletePromotionUseCase(promotions);
 
     expect(await list.execute(1)).toHaveLength(1);
     expect(await list.execute(1, chopp)).toHaveLength(1);
     expect(await list.execute(1, 999)).toHaveLength(0);
     expect(await list.execute(2)).toHaveLength(0);
-    await expect(remove.execute(2, created.id)).rejects.toThrow(PromotionNotFound);
-    await remove.execute(1, created.id);
+    await expect(remove().execute(stranger, created.id)).rejects.toThrow(PromotionNotFound);
+    await remove().execute(admin, created.id);
     await expect(new GetPromotionUseCase(promotions).execute(1, created.id)).rejects.toThrow(
       'Promoção 1 não encontrada.',
     );
+    expect(audit.entries.at(-1)).toMatchObject({
+      action: 'promotion.deleted',
+      changes: { before: { description: 'Happy hour', price: 700 } },
+    });
   });
 
   it('excluir o produto leva as promoções junto', async () => {
-    await create.execute(1, chopp, happyHour);
-    await new DeleteProductUseCase(products).execute(1, chopp);
+    await create.execute(admin, chopp, happyHour);
+    await new DeleteProductUseCase(products, promotions, audit.auditor()).execute(admin, chopp);
 
     expect(await new ListPromotionsUseCase(promotions).execute(1)).toEqual([]);
   });
