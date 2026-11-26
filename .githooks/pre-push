@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Portão local antes de publicar.
+#
+#   Roda ESLint + Prettier, tsc --noEmit, dependency-cruiser e os testes unitários e de caso de uso no container `test`.
+#   Pula quando só mudou documentação (*.md e docs/), quando o commit já foi conferido
+#   (cache em .git/pre-push-ok) ou com SKIP_PRE_PUSH=1 (só em último caso).
+
+set -euo pipefail
+
+if [ "${SKIP_PRE_PUSH:-0}" = "1" ]; then
+  exit 0
+fi
+
+zero="0000000000000000000000000000000000000000"
+ok_file="$(git rev-parse --git-dir)/pre-push-ok"
+
+while read -r _ local_sha _ remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  if [ -f "$ok_file" ] && [ "$(cat "$ok_file")" = "$local_sha" ]; then
+    continue
+  fi
+
+  base="$remote_sha"
+  if [ "$base" = "$zero" ]; then
+    base="$(git merge-base "$local_sha" origin/main 2>/dev/null || true)"
+  fi
+  if [ -n "$base" ] && ! git diff --name-only "$base" "$local_sha" | grep -Ev '(^docs/|\.md$)' | grep -q .; then
+    continue
+  fi
+
+  echo "→ pre-push: lint, tsc, dependency-cruiser e testes unitários (pode levar um minuto)..." >&2
+  if ! docker compose --profile test run --rm -T test sh -c \
+    "npm run -s lint && npm run -s typecheck && npm run -s depcruise && npm run -s test:unit" >&2; then
+    echo "✗ Checagens falharam: nada foi publicado. Corrija e tente de novo (SKIP_PRE_PUSH=1 pula, só em último caso)." >&2
+    exit 1
+  fi
+  echo "$local_sha" > "$ok_file"
+done
