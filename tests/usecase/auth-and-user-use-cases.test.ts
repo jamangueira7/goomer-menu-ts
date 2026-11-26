@@ -11,7 +11,7 @@ import { ValidationError } from '../../src/shared/domain/errors.js';
 import { CreateUserUseCase, DeleteUserUseCase, ListUsersUseCase } from '../../src/user/application/user-use-cases.js';
 import { CannotDeleteSelf, EmailAlreadyTaken, UserNotFound } from '../../src/user/domain/user.js';
 import { FixedClock } from '../support/fixed-clock.js';
-import { AuthFakes, FakeHasher, InMemoryUserRepository } from '../support/in-memory.js';
+import { actorOf, AuthFakes, FakeHasher, InMemoryAuditLog, InMemoryUserRepository } from '../support/in-memory.js';
 
 describe('casos de uso de autenticação e usuários', () => {
   let users: InMemoryUserRepository;
@@ -19,10 +19,11 @@ describe('casos de uso de autenticação e usuários', () => {
   let clock: FixedClock;
   let hasher: FakeHasher;
   let adminId: number;
+  let audit: InMemoryAuditLog;
 
   const forgot = (url = 'http://localhost:8091/reset-password') =>
-    new ForgotPasswordUseCase(users, fakes, fakes, fakes, clock, url);
-  const reset = () => new ResetPasswordUseCase(users, fakes, hasher, clock);
+    new ForgotPasswordUseCase(users, fakes, fakes, fakes, clock, audit.auditor(), url);
+  const reset = () => new ResetPasswordUseCase(users, fakes, hasher, clock, audit.auditor());
   const login = () => new LoginUseCase(users, hasher, fakes);
 
   beforeEach(async () => {
@@ -30,8 +31,9 @@ describe('casos de uso de autenticação e usuários', () => {
     fakes = new AuthFakes();
     clock = new FixedClock();
     hasher = new FakeHasher();
+    audit = new InMemoryAuditLog(clock);
     adminId = (
-      await new CreateUserUseCase(users, hasher).execute(1, {
+      await new CreateUserUseCase(users, hasher, audit.auditor()).execute(1, {
         name: 'Admin',
         email: 'Admin@BarDoJoao.com',
         password: 'goomer123',
@@ -42,8 +44,16 @@ describe('casos de uso de autenticação e usuários', () => {
   it('login devolve token com usuário e restaurante', async () => {
     const result = await login().execute('admin@bardojoao.com', 'goomer123');
 
-    expect(result).toEqual({ accessToken: `token-${adminId}-1`, tokenType: 'Bearer', expiresIn: 3600 });
-    expect(await fakes.verify(result.accessToken)).toEqual({ userId: adminId, restaurantId: 1 });
+    expect(result).toEqual({
+      accessToken: `token-${adminId}-1-admin@bardojoao.com`,
+      tokenType: 'Bearer',
+      expiresIn: 3600,
+    });
+    expect(await fakes.verify(result.accessToken)).toEqual({
+      userId: adminId,
+      restaurantId: 1,
+      email: 'admin@bardojoao.com',
+    });
   });
 
   it('falhas de login são 401, inclusive e-mail mal formado', async () => {
@@ -54,7 +64,7 @@ describe('casos de uso de autenticação e usuários', () => {
   });
 
   it('usuários ficam no restaurante e o e-mail é único', async () => {
-    const create = new CreateUserUseCase(users, hasher);
+    const create = new CreateUserUseCase(users, hasher, audit.auditor());
     const bia = await create.execute(1, { name: 'Bia', email: 'bia@bardojoao.com', password: 'senha-da-bia' });
     await create.execute(2, { name: 'Caio', email: 'caio@izakaya.jp', password: 'senha-do-caio' });
 
@@ -69,17 +79,24 @@ describe('casos de uso de autenticação e usuários', () => {
   });
 
   it('regras de exclusão de usuário', async () => {
-    const remove = new DeleteUserUseCase(users);
-    const bia = await new CreateUserUseCase(users, hasher).execute(1, {
+    const remove = new DeleteUserUseCase(users, audit.auditor());
+    const bia = await new CreateUserUseCase(users, hasher, audit.auditor()).execute(1, {
       name: 'Bia',
       email: 'bia@bardojoao.com',
       password: 'senha-da-bia',
     });
 
-    await expect(remove.execute(1, adminId, adminId)).rejects.toThrow(CannotDeleteSelf);
-    await expect(remove.execute(2, 99, bia.id)).rejects.toThrow(UserNotFound);
-    await remove.execute(1, adminId, bia.id);
-    await expect(remove.execute(1, adminId, bia.id)).rejects.toThrow(UserNotFound);
+    const admin = actorOf(1, adminId);
+    await expect(remove.execute(admin, adminId)).rejects.toThrow(CannotDeleteSelf);
+    await expect(remove.execute(actorOf(2, 99), bia.id)).rejects.toThrow(UserNotFound);
+    await remove.execute(admin, bia.id);
+    await expect(remove.execute(admin, bia.id)).rejects.toThrow(UserNotFound);
+    expect(audit.entries.at(-1)).toMatchObject({
+      actor: admin,
+      action: 'user.deleted',
+      entityId: bia.id,
+      changes: { before: { name: 'Bia', email: 'bia@bardojoao.com' } },
+    });
   });
 
   it('esqueci a senha e redefinição', async () => {

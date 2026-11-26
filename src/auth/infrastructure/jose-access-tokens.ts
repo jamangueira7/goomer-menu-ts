@@ -6,7 +6,7 @@ import { ACCESS_TOKEN_TTL_SECONDS, type AccessTokens, type AuthContext } from '.
 const ALGORITHM = 'HS256';
 
 /**
- * JWT HS256 com validade de 1 hora: `sub` é o id do usuário e `rid` o do restaurante.
+ * JWT HS256 com validade de 1 hora: `sub` é o id do usuário, `rid` o do restaurante e `email` o e-mail (para o log).
  * A hora de emissão e a de verificação vêm do mesmo `Clock`, então os testes controlam o vencimento.
  */
 export class JoseAccessTokens implements AccessTokens {
@@ -22,9 +22,9 @@ export class JoseAccessTokens implements AccessTokens {
     this.key = new TextEncoder().encode(secret);
   }
 
-  issue(userId: number, restaurantId: number): Promise<string> {
+  issue(userId: number, restaurantId: number, email: string): Promise<string> {
     const now = Math.floor(this.clock.now().getTime() / 1000);
-    return new SignJWT({ rid: restaurantId })
+    return new SignJWT({ rid: restaurantId, email })
       .setProtectedHeader({ alg: ALGORITHM, typ: 'JWT' })
       .setSubject(String(userId))
       .setIssuedAt(now)
@@ -45,9 +45,15 @@ export class JoseAccessTokens implements AccessTokens {
     }
     const userId = Number(payload.sub);
     const restaurantId = payload['rid'];
-    if (!Number.isSafeInteger(userId) || typeof restaurantId !== 'number' || !Number.isSafeInteger(restaurantId)) {
-      throw new Unauthenticated('Token sem usuário ou restaurante.');
+    const email = payload['email'];
+    if (
+      !Number.isSafeInteger(userId) ||
+      typeof restaurantId !== 'number' ||
+      !Number.isSafeInteger(restaurantId) ||
+      typeof email !== 'string'
+    ) {
+      throw new Unauthenticated('Token sem usuário, restaurante ou e-mail.');
     }
-    return { userId, restaurantId };
+    return { userId, restaurantId, email };
   }
 }

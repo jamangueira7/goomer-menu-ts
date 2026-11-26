@@ -2,11 +2,13 @@
 export interface AuthContext {
   userId: number;
   restaurantId: number;
+  /** Cópia do e-mail no token, para o log de auditoria não precisar de outra consulta. */
+  email: string;
 }
 
 /** Emissão e verificação do token de acesso (JWT HS256 na infraestrutura). */
 export interface AccessTokens {
-  issue(userId: number, restaurantId: number): Promise<string>;
+  issue(userId: number, restaurantId: number, email: string): Promise<string>;
   /** Lança Unauthenticated se o token for inválido ou estiver vencido. */
   verify(token: string): Promise<AuthContext>;
 }

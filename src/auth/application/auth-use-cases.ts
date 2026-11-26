@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import type { Actor, AuditRecord, Auditor } from '../../shared/application/audit.js';
 import { TooManyRequests, Unauthenticated } from '../../shared/application/errors.js';
 import type { Clock } from '../../shared/domain/clock.js';
 import { ValidationError } from '../../shared/domain/errors.js';
@@ -42,7 +43,7 @@ export class LoginUseCase {
       throw new Unauthenticated('E-mail ou senha inválidos.');
     }
     return {
-      accessToken: await this.tokens.issue(user.id, user.restaurantId),
+      accessToken: await this.tokens.issue(user.id, user.restaurantId, user.email.value),
       tokenType: 'Bearer',
       expiresIn: ACCESS_TOKEN_TTL_SECONDS,
     };
@@ -62,6 +63,7 @@ export class ForgotPasswordUseCase {
     private readonly throttle: ResetRequestThrottle,
     private readonly mailer: Mailer,
     private readonly clock: Clock,
+    private readonly auditor: Auditor,
     private readonly resetUrl: string,
   ) {}
 
@@ -79,11 +81,15 @@ export class ForgotPasswordUseCase {
     await this.throttle.record(address.value, ip, now);
     const user = await this.users.findByEmail(address);
     if (user === null) {
-      return;
+      return; // sem usuário a quem atribuir: não há log (o limite continua contando)
     }
     const plain = randomBytes(32).toString('hex');
-    await this.tokens.invalidateOpenTokensOf(user.id, now);
-    await this.tokens.save(PasswordResetToken.issue(user.id, hashResetToken(plain), now));
+    await this.auditor.run(selfActor(user, ip), async () => {
+      await this.tokens.invalidateOpenTokensOf(user.id, now);
+      await this.tokens.save(PasswordResetToken.issue(user.id, hashResetToken(plain), now));
+      return { result: undefined, audit: passwordAudit('auth.password_reset_requested', user) };
+    });
+    // O e-mail sai depois do commit: se o SMTP falhar, o token e o log continuam gravados.
     const separator = this.resetUrl.includes('?') ? '&' : '?';
     await this.mailer.sendPasswordReset(user.email.value, user.name, `${this.resetUrl}${separator}token=${plain}`);
   }
@@ -98,9 +104,10 @@ export class ResetPasswordUseCase {
     private readonly tokens: PasswordResetTokenRepository,
     private readonly hasher: PasswordHasher,
     private readonly clock: Clock,
+    private readonly auditor: Auditor,
   ) {}
 
-  async execute(plainToken: string, newPassword: string): Promise<void> {
+  async execute(plainToken: string, newPassword: string, ip: string | null = null): Promise<void> {
     const password = Password.fromString(newPassword);
     const now = this.clock.now();
     const token = await this.tokens.findByHash(hashResetToken(plainToken));
@@ -112,8 +119,21 @@ export class ResetPasswordUseCase {
     if (user === null) {
       throw new InvalidResetToken();
     }
-    user.changePassword(await this.hasher.hash(password));
-    await this.users.save(user);
-    await this.tokens.save(token);
+    const passwordHash = await this.hasher.hash(password);
+    await this.auditor.run(selfActor(user, ip), async () => {
+      user.changePassword(passwordHash);
+      await this.users.save(user);
+      await this.tokens.save(token);
+      return { result: undefined, audit: passwordAudit('auth.password_reset', user) };
+    });
   }
+}
+
+/** Nas rotas sem token, quem age é o próprio dono da conta. */
+function selfActor(user: User, ip: string | null): Actor {
+  return { userId: user.id, email: user.email.value, restaurantId: user.restaurantId, ip };
+}
+
+function passwordAudit(action: string, user: User): AuditRecord {
+  return { action, entityType: 'user', entityId: user.id, changes: {} };
 }

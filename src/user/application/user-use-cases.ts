@@ -1,3 +1,4 @@
+import type { Actor, Auditor } from '../../shared/application/audit.js';
 import { Email } from '../domain/email.js';
 import { Password } from '../domain/password.js';
 import { CannotDeleteSelf, EmailAlreadyTaken, User, UserNotFound } from '../domain/user.js';
@@ -27,28 +28,39 @@ export interface NewUser {
   password: string;
 }
 
-/** Cadastra um usuário no restaurante (usado pela rota protegida, pelo seed e pelo create-admin). */
+/**
+ * Cadastra um usuário no restaurante. Pela rota, o ator é quem está logado; no seed e no create-admin não há
+ * ninguém logado, então o próprio usuário criado assina a entrada do log.
+ */
 export class CreateUserUseCase {
   constructor(
     private readonly users: UserRepository,
     private readonly hasher: PasswordHasher,
+    private readonly auditor: Auditor,
   ) {}
 
-  async execute(restaurantId: number, input: NewUser): Promise<UserOutput> {
+  async execute(restaurantId: number, input: NewUser, actor?: Actor): Promise<UserOutput> {
     const email = Email.fromString(input.email);
     const password = Password.fromString(input.password);
-    if ((await this.users.findByEmail(email)) !== null) {
-      throw EmailAlreadyTaken.of(email);
-    }
-    const user = User.register(
-      await this.users.nextId(),
-      restaurantId,
-      input.name,
-      email,
-      await this.hasher.hash(password),
-    );
-    await this.users.save(user);
-    return toUserOutput(user);
+    const passwordHash = await this.hasher.hash(password);
+    const id = await this.users.nextId();
+    const signer = actor ?? { userId: id, email: email.value, restaurantId, ip: null };
+    return this.auditor.run(signer, async () => {
+      if ((await this.users.findByEmail(email)) !== null) {
+        throw EmailAlreadyTaken.of(email);
+      }
+      const user = User.register(id, restaurantId, input.name, email, passwordHash);
+      await this.users.save(user);
+      return {
+        result: toUserOutput(user),
+        audit: {
+          action: 'user.created',
+          entityType: 'user',
+          entityId: id,
+          changes: { after: { name: user.name, email: user.email.value } },
+        },
+      };
+    });
   }
 }
 
@@ -61,16 +73,30 @@ export class ListUsersUseCase {
 }
 
 export class DeleteUserUseCase {
-  constructor(private readonly users: UserRepository) {}
+  constructor(
+    private readonly users: UserRepository,
+    private readonly auditor: Auditor,
+  ) {}
 
-  async execute(restaurantId: number, currentUserId: number, id: number): Promise<void> {
-    if (id === currentUserId) {
+  async execute(actor: Actor, id: number): Promise<void> {
+    if (id === actor.userId) {
       throw new CannotDeleteSelf();
     }
-    const user = await this.users.find(restaurantId, id);
-    if (user === null) {
-      throw UserNotFound.withId(id);
-    }
-    await this.users.delete(user.id);
+    await this.auditor.run(actor, async () => {
+      const user = await this.users.find(actor.restaurantId, id);
+      if (user === null) {
+        throw UserNotFound.withId(id);
+      }
+      await this.users.delete(user.id);
+      return {
+        result: undefined,
+        audit: {
+          action: 'user.deleted',
+          entityType: 'user',
+          entityId: id,
+          changes: { before: { name: user.name, email: user.email.value } },
+        },
+      };
+    });
   }
 }

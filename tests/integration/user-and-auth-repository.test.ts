@@ -89,9 +89,9 @@ describe('repositórios pg de usuários e autenticação, Argon2id e JWT', () =>
   it('JWT HS256 leva usuário e restaurante e vence em 1 hora', async () => {
     const clock = new FixedClock('2026-12-02T12:00:00Z');
     const jwt = new JoseAccessTokens('s'.repeat(32), clock);
-    const token = await jwt.issue(5, 1);
+    const token = await jwt.issue(5, 1, 'ana@bar.com');
 
-    expect(await jwt.verify(token)).toEqual({ userId: 5, restaurantId: 1 });
+    expect(await jwt.verify(token)).toEqual({ userId: 5, restaurantId: 1, email: 'ana@bar.com' });
     await expect(jwt.verify(`${token}x`)).rejects.toThrow(Unauthenticated);
     await expect(new JoseAccessTokens('o'.repeat(32), clock).verify(token)).rejects.toThrow(Unauthenticated);
     clock.advanceMinutes(61);
