@@ -14,7 +14,10 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
       '@typescript-eslint/consistent-type-imports': 'error',
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', ignoreRestSiblings: true },
+      ],
       'no-console': ['error', { allow: ['error', 'warn'] }],
     },
   },
@@ -23,6 +26,8 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
       '@typescript-eslint/no-confusing-void-expression': 'off',
+      // expect.objectContaining e afins devolvem any por definição.
+      '@typescript-eslint/no-unsafe-assignment': 'off',
       'no-console': 'off',
     },
   },
