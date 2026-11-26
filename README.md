@@ -15,8 +15,10 @@ testes em quatro níveis. O plano completo, com as mesmas regras em PHP e Java, 
   Nem um `INSERT` feito direto no banco consegue criar duas promoções sobrepostas.
 - **Domínio em TypeScript puro:** o dependency-cruiser falha se ele importar o Fastify, o `pg`, um módulo do Node ou
   até a camada de aplicação.
-- **95 testes:** os de integração sobem um Postgres de verdade pelo Testcontainers, e os de ponta a ponta leem o
-  e-mail no Mailpit. Cobertura de 100% no domínio e 99,5% nos casos de uso.
+- **Log de auditoria em toda escrita:** quem fez, o quê, de/para e IP, gravado na mesma transação da escrita e
+  consultável por usuário e período.
+- **123 testes:** os de integração sobem um Postgres de verdade pelo Testcontainers, e os de ponta a ponta leem o
+  e-mail no Mailpit. Cobertura de 100% no domínio e 99,7% nos casos de uso.
 - **Sobe com um comando:** `docker compose up` cria o banco, roda as migrations e o seed e sobe a API com um admin de
   exemplo.
 
@@ -102,6 +104,7 @@ outras exigem `Authorization: Bearer <token>` e só enxergam dados do restaurant
 | `GET` `PUT` `DELETE` | `/promotions/{id}` | Detalha, altera e exclui uma promoção |
 | `GET` `POST` | `/users` | Lista e cria usuários do restaurante |
 | `DELETE` | `/users/{id}` | Exclui um usuário |
+| `GET` | `/users/{id}/audit-logs` | Log de auditoria do usuário por período (`dateIni`, `dateEnd` opcional, paginação) |
 
 Os erros seguem o [Problem Details (RFC 9457)](https://www.rfc-editor.org/rfc/rfc9457), com o detalhe de cada campo
 em `errors`. JSON malformado dá 400, regra de negócio violada dá 422, conflito de horário dá 409, id inexistente ou não
@@ -164,6 +167,17 @@ curl -s "$API/products?category=bebidas&visible=true&page=1&perPage=20" -H "Auth
 curl -s -X PUT $API/products/order -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"ids":[2,1]}'
 ```
 
+**6. Ver o log de auditoria do admin.** Toda escrita acima ficou registrada com o de/para, o IP e a hora local.
+`dateIni` é obrigatório; sem `dateEnd`, a consulta vai até agora. Os dias valem no fuso do restaurante.
+
+```bash
+curl -s "$API/users/1/audit-logs?dateIni=$(date +%F)" -H "Authorization: Bearer $TOKEN"
+curl -s "$API/users/1/audit-logs?dateIni=2026-11-25&dateEnd=2026-11-26&page=1&perPage=50" -H "Authorization: Bearer $TOKEN"
+```
+
+Cada item traz `action` (ex.: `promotion.created`), `entityType`, `entityId`, `changes`, `ip` e `createdAt`. Senha,
+hash e tokens nunca entram no log.
+
 ### Recuperar a senha pelo Mailpit
 
 Como o projeto não tem front-end, o link do e-mail não abre nenhuma tela. Copie o token do link e envie para a API:
@@ -188,7 +202,7 @@ Mais de 5 pedidos para o mesmo e-mail ou IP em 15 minutos recebem 429, com o cab
 
 ## Arquitetura
 
-Cada módulo (`product`, `promotion`, `menu`, `auth`, `user`) tem as mesmas quatro camadas, e as dependências só
+Cada módulo (`product`, `promotion`, `menu`, `auth`, `user`, `audit`) tem as mesmas quatro camadas, e as dependências só
 apontam para dentro:
 
 ```mermaid
@@ -206,7 +220,8 @@ src/<módulo>/domain           entidades, objetos de valor e interfaces de repos
 src/<módulo>/application      casos de uso (CreatePromotionUseCase, GetMenuUseCase...) com DTOs de entrada e saída
 src/<módulo>/infrastructure   implementações com pg, jose, argon2 e nodemailer
 src/<módulo>/http             rotas e schemas (validação + OpenAPI)
-src/shared                    Money, Weekday, TimeOfDay, TimeWindow, Timezone, Clock, Problem Details, Database
+src/audit                     log de auditoria: período no fuso, consulta por usuário, PgAuditLog e rota
+src/shared                    Money, Weekday, TimeOfDay, TimeWindow, Timezone, Clock, Problem Details, Database, Auditor
 src/bootstrap                 container.ts (único ponto de composição), config.ts e http-app.ts
 prisma/                       schema.prisma e migrations com SQL escrito à mão
 ```
@@ -236,15 +251,18 @@ O enunciado deixa alguns pontos em aberto. Estas foram as decisões, iguais nas 
 | Excluir produto que tem promoção | As promoções dele são excluídas junto |
 | Troca de senha | Tokens JWT antigos continuam válidos até vencer, no máximo 1 hora |
 | `"price": "10"` (texto no lugar de número) | 422. A validação não converte tipos em silêncio |
+| Log de auditoria | Uma linha por escrita, na mesma transação: se o log falha, a escrita é desfeita |
+| Autor do log | `actor_user_id` sem chave estrangeira, para o log sobreviver à exclusão do usuário; o e-mail é copiado na hora |
+| Período do log | Dias inclusivos no fuso do restaurante; sem `dateEnd`, vai até agora |
 
 ## Testes e qualidade
 
 | Nível | Pasta | Testes | O que cobre |
 | --- | --- | --- | --- |
-| Unitário | `tests/unit` | 36 | Regras do domínio, sem banco, em milissegundos |
-| Caso de uso | `tests/usecase` | 30 | Repositórios em memória e relógio fixo em fusos diferentes |
-| Integração | `tests/integration` | 15 | Repositórios `pg` contra Postgres real (Testcontainers), incluindo o `EXCLUDE` e os `CHECK` |
-| Ponta a ponta | `tests/e2e` | 14 | App inteira por `app.inject`, banco de teste e Mailpit de verdade (o token sai do e-mail) |
+| Unitário | `tests/unit` | 48 | Regras do domínio, sem banco, em milissegundos |
+| Caso de uso | `tests/usecase` | 39 | Repositórios em memória e relógio fixo em fusos diferentes |
+| Integração | `tests/integration` | 18 | Repositórios `pg` contra Postgres real (Testcontainers), incluindo o `EXCLUDE` e os `CHECK` |
+| Ponta a ponta | `tests/e2e` | 18 | App inteira por `app.inject`, banco de teste e Mailpit de verdade (o token sai do e-mail) |
 
 Os testes de ponta a ponta são o porte direto da coleção do projeto PHP: mesmas rotas, mesmos códigos e as mesmas
 mensagens. É o critério de aceite comum às trilhas.
@@ -261,7 +279,7 @@ Sem `make`, os mesmos comandos rodam pelo compose. Por exemplo:
 `docker compose --profile test run --rm test npm test`. Se o grupo do socket do Docker não for o 999, defina
 `DOCKER_GID` (`stat -c %g /var/run/docker.sock`).
 
-Resultado atual: cobertura de linhas de 100% no domínio e 99,5% nos casos de uso, ESLint, Prettier, `tsc` e
+Resultado atual: cobertura de linhas de 100% no domínio e 99,7% nos casos de uso, ESLint, Prettier, `tsc` e
 dependency-cruiser sem pendências.
 
 ## Desafios técnicos
@@ -302,6 +320,19 @@ Node. O hash SHA-256 do token de redefinição é feito na aplicação, e a enti
 **Impedir sobreposição no próprio banco.** Igual ao PHP: a função `minute_of_day(time)` é `IMMUTABLE`, e o
 `EXCLUDE USING gist` indexa `int4range(início, fim)`. Se duas requisições passarem juntas pela validação, o banco recusa
 a segunda, e o repositório traduz o erro `23P01` para o mesmo 409.
+
+**Auditoria na mesma transação, sem passar conexão de mão em mão.** Toda escrita passa por um `Auditor` da camada de
+aplicação, que roda a escrita e o `record()` dentro de `TransactionManager.run`. A implementação usa o mesmo
+`AsyncLocalStorage` do `Database`, então os repositórios não mudaram uma linha. Um teste de integração força o
+INSERT do log a falhar (IP inválido para `inet`) e confere que o produto também não foi gravado.
+
+**O e-mail do ator sem consulta extra.** O log copia o e-mail de quem agiu. Para não buscar o usuário a cada escrita, o
+JWT ganhou a claim `email`, e o `Actor` sai do token mais o `request.ip`. No seed e no `create-admin` não há ninguém
+logado, então o usuário recém-criado assina a própria entrada.
+
+**Dia local em UTC, com horário de verão.** O filtro do log usa dias inteiros no fuso do restaurante. A meia-noite
+local é calculada com o deslocamento do `Intl` em dois passos, o que acerta os dias de troca de horário (testado com
+Nova York em 8/3/2026). O fim é exclusivo: `dateEnd=26` vira "antes de 27 às 00:00".
 
 **Outras escolhas**
 

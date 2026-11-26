@@ -18,6 +18,7 @@ Trilha 1 do plano em `docs/visao-geral.md` (o contrato comum: regras, rotas, esq
 - SQL escrito à mão com parâmetros posicionais (`$1`) no `pg`; Prisma Migrate só para o esquema (o Client não é usado).
 - O restaurante das rotas protegidas vem sempre do token (`authOf(request)`), nunca da URL. Recurso de outro restaurante é 404.
 - Erros em Problem Details; preços em centavos (`Money`); hora "agora" sempre via `Clock`.
+- Toda escrita de negócio passa pelo `Auditor` (escrita + `audit_logs` na mesma transação); nunca grave senha, hash ou token no log.
 - `strict` + `noUncheckedIndexedAccess`, ESLint `strictTypeChecked` limpo, cobertura de domain e application >= 90%
   (o Vitest falha abaixo disso).
 

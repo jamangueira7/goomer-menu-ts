@@ -85,6 +85,7 @@ Como a autenticação funciona nas três trilhas:
 | `POST /api/v1/users` | JWT | Cadastra usuário (nome, e-mail e senha) no restaurante do token; 409 se o e-mail já existe |
 | `GET /api/v1/users` | JWT | Lista os usuários do restaurante, sem nunca devolver o hash da senha |
 | `DELETE /api/v1/users/{id}` | JWT | Remove um usuário do restaurante; 422 se a pessoa tentar remover a si mesma |
+| `GET /api/v1/users/{id}/audit-logs` | JWT | Log de auditoria das ações do usuário `{id}` por período (`dateIni` obrigatório, `dateEnd` opcional); ver "Log de auditoria" |
 | `POST /api/v1/auth/forgot-password` | Sem token | Recebe o e-mail e envia o link de redefinição; responde sempre 202 |
 | `POST /api/v1/auth/reset-password` | Sem token | Recebe o token do e-mail e a nova senha; 204 se deu certo, 422 se o token é inválido, já foi usado ou venceu |
 
@@ -138,6 +139,8 @@ O mesmo esquema nas três trilhas. As regras que dá para garantir no banco fica
 
 Para usuários e recuperação de senha, `users` ganha a coluna `name` e entra a tabela `password_reset_tokens` (`id`, `user_id`, `token_hash`, `expires_at`, `used_at`, `created_at`), com índice único em `token_hash` e `ON DELETE CASCADE` a partir do usuário.
 
+Para o log de auditoria entra a tabela `audit_logs` (`id`, `restaurant_id`, `actor_user_id`, `actor_email`, `action`, `entity_type`, `entity_id`, `changes` em `jsonb`, `ip` em `inet`, `created_at`), com índice em `(restaurant_id, actor_user_id, created_at DESC)`. `actor_user_id` fica sem chave estrangeira de propósito, para o log sobreviver à exclusão do usuário.
+
 A restrição de sobreposição usa a extensão `btree_gist` e um intervalo de minutos calculado a partir de `start_time` e `end_time`. Por isso `promotion_windows` repete o `product_id`: é o que permite ao Postgres comparar janelas de promoções diferentes do mesmo produto. A aplicação também checa antes, para devolver um 409 com mensagem clara em vez de um erro de banco.
 
 O cardápio sai de uma única consulta: produtos visíveis do restaurante, filtrados pela disponibilidade (sem janela ou com janela que cobre o dia e hora locais), com `LEFT JOIN LATERAL` buscando a promoção ativa e ordenação por categoria, `position` e nome. O dia da semana e a hora locais entram como parâmetros, calculados pelo domínio a partir do `Clock` e do fuso do restaurante. Esboço da consulta:
@@ -172,6 +175,57 @@ SQL puro nas consultas e ORM só nas migrations, em cada trilha:
 | Java | `JdbcClient` do Spring com SQL escrito à mão | Flyway |
 
 No Java não existe um ORM de migrations no mesmo sentido: o Hibernate só gera o esquema, sem versionar. O Flyway é o padrão do ecossistema e o desvio fica explicado no README.
+
+## Log de auditoria
+
+Pedido do usuário depois do plano inicial: gravar o que foi feito e quem fez, em toda escrita no banco, com uma tabela e um endpoint para ler o log de um usuário por período. Vale nas três trilhas.
+
+O que é gravado: toda escrita de negócio gera UMA linha em `audit_logs`, NA MESMA TRANSAÇÃO da escrita. Se a escrita falhar, não há log; se o log falhar, a escrita é desfeita.
+
+| Ação (`action`) | Quando | `entity_type` / `entity_id` | `changes` |
+| --- | --- | --- | --- |
+| `product.created` | `POST /products` | product / id | `{"after": {...}}` |
+| `product.updated` | `PUT /products/{id}` | product / id | `{"before": {...}, "after": {...}}` só com os campos que mudaram |
+| `product.visibility_changed` | `PATCH /products/{id}/visibility` | product / id | `{"before": {"visible": x}, "after": {"visible": y}}` |
+| `product.reordered` | `PUT /products/order` | product / null | `{"after": {"ids": [...]}}` |
+| `product.deleted` | `DELETE /products/{id}` | product / id | `{"before": {...}}`, com quantas promoções caíram junto |
+| `promotion.created` / `promotion.updated` / `promotion.deleted` | rotas de promoção | promotion / id | mesmo padrão de/para, janelas incluídas |
+| `user.created` / `user.deleted` | rotas de usuário | user / id | nome e e-mail; nunca senha nem hash |
+| `auth.password_reset_requested` | `forgot-password` com e-mail existente | user / id | `{}`; o ator é o próprio usuário |
+| `auth.password_reset` | `reset-password` com sucesso | user / id | `{}` |
+
+Não registra leituras, login nem pedido de recuperação para e-mail inexistente (não há usuário a quem atribuir; o limite de 429 continua na tabela de pedidos). Nunca grava senha, hash, token ou JWT.
+
+Desenho comum:
+
+- Porta `AuditLog` (`record(entry)`) na camada de aplicação de `shared`, implementação SQL na infraestrutura; só INSERT.
+- O "quem" é um `Actor` (id, e-mail e restaurante do token, mais o IP da requisição) que a camada HTTP passa ao caso de uso; o domínio não sabe de HTTP.
+- Atomicidade por uma porta `TransactionManager` na aplicação: o caso de uso envolve a escrita e o `record()` numa transação só. Em memória nos testes de caso de uso.
+- A hora vem do `Clock`, não do `now()` do banco.
+
+Endpoint: `GET /api/v1/users/{id}/audit-logs?dateIni=2026-11-25&dateEnd=2026-11-26&page=1&perPage=50` (JWT).
+
+- `{id}` é o usuário cujas ações se quer ver. Usuário de outro restaurante ou inexistente: 404. Usuário já excluído, mas com log no restaurante: devolve o log normalmente.
+- `dateIni` é obrigatório e `dateEnd` é opcional (sem ele, vai até agora), no formato `AAAA-MM-DD`. Os dias são inclusivos e interpretados no fuso do restaurante. Data inválida ou `dateEnd` antes de `dateIni`: 422 com `errors` por campo.
+- Resposta 200, mais recentes primeiro, paginada como `/products`:
+
+```json
+{
+  "data": [
+    {
+      "id": 42,
+      "action": "promotion.created",
+      "entityType": "promotion",
+      "entityId": 9,
+      "changes": { "after": { "productId": 8, "description": "Sexta da caipirinha", "price": 1500, "windows": [] } },
+      "ip": "172.18.0.1",
+      "createdAt": "2026-11-25T18:31:04-03:00"
+    }
+  ],
+  "user": { "id": 1, "email": "admin@bardojoao.com" },
+  "meta": { "page": 1, "perPage": 50, "total": 1 }
+}
+```
 
 ## Arquitetura limpa, testes e Docker (comum às três trilhas)
 

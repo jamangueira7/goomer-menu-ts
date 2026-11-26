@@ -32,6 +32,8 @@ Módulos: `product`, `promotion`, `menu`, `auth`, `user`, mais `shared`. Imports
   do escopo protegido. Teste em `tests/e2e` com `Api.setup()` (`app.inject`).
 - **Mudança de esquema**: nova pasta `prisma/migrations/AAAAMMDDhhmmss_nome/migration.sql` com SQL escrito à mão, e o
   modelo correspondente em `schema.prisma`; regras que dá para garantir no banco (CHECK, EXCLUDE, FK) entram também lá.
+- **Nova escrita**: o caso de uso recebe um `Actor` (`actorOf(request)` na rota) e embrulha a escrita em
+  `auditor.run(actor, ...)`, devolvendo `{ result, audit: { action, entityType, entityId, changes } }`.
 - **Nova porta**: interface em `application` (ou `domain`, se for repositório), implementação em `infrastructure`,
   ligação em `src/bootstrap/container.ts`.
 
