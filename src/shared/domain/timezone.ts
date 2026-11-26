@@ -1,4 +1,5 @@
 import { ValidationError } from './errors.js';
+import type { LocalDate } from './local-date.js';
 import { LocalMoment } from './local-moment.js';
 import { Weekday } from './weekday.js';
 
@@ -49,5 +50,19 @@ export class Timezone {
       `${hour}:${minute}:${second}`,
       `${part('year')}-${part('month')}-${part('day')}T${hour}:${minute}:${second}${offset}`,
     );
+  }
+
+  /** Instante (UTC) em que começa o dia local `date` neste fuso: 00:00 de lá. */
+  startOfDay(date: LocalDate): Date {
+    const midnightUtc = Date.UTC(date.year, date.month - 1, date.day);
+    // Primeiro palpite com o deslocamento da meia-noite UTC; o segundo passo corrige se houver horário de verão no meio.
+    let instant = midnightUtc - this.offsetMinutesAt(new Date(midnightUtc)) * 60_000;
+    instant = midnightUtc - this.offsetMinutesAt(new Date(instant)) * 60_000;
+    return new Date(instant);
+  }
+
+  private offsetMinutesAt(instant: Date): number {
+    const [, sign, hours, minutes] = /([+-])(\d{2}):(\d{2})$/.exec(this.localize(instant).iso) ?? [];
+    return (sign === '-' ? -1 : 1) * (Number(hours) * 60 + Number(minutes));
   }
 }
