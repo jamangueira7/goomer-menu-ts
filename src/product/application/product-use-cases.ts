@@ -1,6 +1,8 @@
+import { changedFields, type Actor, type Auditor } from '../../shared/application/audit.js';
 import { toTimeWindows } from '../../shared/application/window-data.js';
 import { ValidationError } from '../../shared/domain/errors.js';
 import { Money } from '../../shared/domain/money.js';
+import type { PromotionRepository } from '../../promotion/domain/promotion-repository.js';
 import { Category } from '../domain/category.js';
 import { Product, type ProductChanges } from '../domain/product.js';
 import { ProductNotFound, type ProductRepository } from '../domain/product-repository.js';
@@ -16,19 +18,47 @@ function changesFrom(data: ProductData): ProductChanges {
   };
 }
 
-export class CreateProductUseCase {
-  constructor(private readonly products: ProductRepository) {}
+/** Retrato do produto para o log de auditoria (a saída, sem o id, que já vai em entity_id). */
+function snapshot(output: ProductOutput): Record<string, unknown> {
+  const { id: _id, ...fields } = output;
+  return fields;
+}
 
-  async execute(restaurantId: number, data: ProductData): Promise<ProductOutput> {
-    const changes = changesFrom(data);
-    const product = Product.create({
-      ...changes,
-      id: await this.products.nextId(),
-      restaurantId,
-      position: (await this.products.lastPosition(restaurantId)) + 1,
+async function findOrFail(products: ProductRepository, restaurantId: number, id: number): Promise<Product> {
+  const product = await products.find(restaurantId, id);
+  if (product === null) {
+    throw ProductNotFound.withId(id);
+  }
+  return product;
+}
+
+export class CreateProductUseCase {
+  constructor(
+    private readonly products: ProductRepository,
+    private readonly auditor: Auditor,
+  ) {}
+
+  execute(actor: Actor, data: ProductData): Promise<ProductOutput> {
+    return this.auditor.run(actor, async () => {
+      const changes = changesFrom(data);
+      const product = Product.create({
+        ...changes,
+        id: await this.products.nextId(),
+        restaurantId: actor.restaurantId,
+        position: (await this.products.lastPosition(actor.restaurantId)) + 1,
+      });
+      await this.products.save(product);
+      const result = toProductOutput(product);
+      return {
+        result,
+        audit: {
+          action: 'product.created',
+          entityType: 'product',
+          entityId: result.id,
+          changes: { after: snapshot(result) },
+        },
+      };
     });
-    await this.products.save(product);
-    return toProductOutput(product);
   }
 }
 
@@ -36,43 +66,62 @@ export class GetProductUseCase {
   constructor(private readonly products: ProductRepository) {}
 
   async execute(restaurantId: number, id: number): Promise<ProductOutput> {
-    const product = await this.products.find(restaurantId, id);
-    if (product === null) {
-      throw ProductNotFound.withId(id);
-    }
-    return toProductOutput(product);
+    return toProductOutput(await findOrFail(this.products, restaurantId, id));
   }
 }
 
 export class UpdateProductUseCase {
-  constructor(private readonly products: ProductRepository) {}
+  constructor(
+    private readonly products: ProductRepository,
+    private readonly auditor: Auditor,
+  ) {}
 
-  async execute(restaurantId: number, id: number, data: ProductData): Promise<ProductOutput> {
-    const product = await this.products.find(restaurantId, id);
-    if (product === null) {
-      throw ProductNotFound.withId(id);
-    }
-    product.update(changesFrom(data));
-    await this.products.save(product);
-    return toProductOutput(product);
+  execute(actor: Actor, id: number, data: ProductData): Promise<ProductOutput> {
+    return this.auditor.run(actor, async () => {
+      const product = await findOrFail(this.products, actor.restaurantId, id);
+      const before = snapshot(toProductOutput(product));
+      product.update(changesFrom(data));
+      await this.products.save(product);
+      const result = toProductOutput(product);
+      return {
+        result,
+        audit: {
+          action: 'product.updated',
+          entityType: 'product',
+          entityId: id,
+          changes: changedFields(before, snapshot(result)),
+        },
+      };
+    });
   }
 }
 
 export class ChangeProductVisibilityUseCase {
-  constructor(private readonly products: ProductRepository) {}
+  constructor(
+    private readonly products: ProductRepository,
+    private readonly auditor: Auditor,
+  ) {}
 
-  async execute(restaurantId: number, id: number, visible: boolean): Promise<ProductOutput> {
-    const product = await this.products.find(restaurantId, id);
-    if (product === null) {
-      throw ProductNotFound.withId(id);
-    }
-    if (visible) {
-      product.show();
-    } else {
-      product.hide();
-    }
-    await this.products.save(product);
-    return toProductOutput(product);
+  execute(actor: Actor, id: number, visible: boolean): Promise<ProductOutput> {
+    return this.auditor.run(actor, async () => {
+      const product = await findOrFail(this.products, actor.restaurantId, id);
+      const before = product.visible;
+      if (visible) {
+        product.show();
+      } else {
+        product.hide();
+      }
+      await this.products.save(product);
+      return {
+        result: toProductOutput(product),
+        audit: {
+          action: 'product.visibility_changed',
+          entityType: 'product',
+          entityId: id,
+          changes: { before: { visible: before }, after: { visible } },
+        },
+      };
+    });
   }
 }
 
@@ -109,33 +158,56 @@ export class ListProductsUseCase {
  * vão para depois deles, mantendo a ordem relativa que já tinham.
  */
 export class ReorderProductsUseCase {
-  constructor(private readonly products: ProductRepository) {}
+  constructor(
+    private readonly products: ProductRepository,
+    private readonly auditor: Auditor,
+  ) {}
 
-  async execute(restaurantId: number, ids: readonly number[]): Promise<void> {
+  async execute(actor: Actor, ids: readonly number[]): Promise<void> {
     if (ids.length === 0) {
       throw new ValidationError('Informe ao menos um id de produto.', 'ids');
     }
     if (new Set(ids).size !== ids.length) {
       throw new ValidationError('A lista de ids tem repetições.', 'ids');
     }
-    const existing = await this.products.idsOf(restaurantId);
-    const unknown = ids.filter((id) => !existing.includes(id));
-    if (unknown.length > 0) {
-      throw new ValidationError(`Produtos inexistentes: ${unknown.join(', ')}.`, 'ids');
-    }
-    const ordered = [...ids, ...existing.filter((id) => !ids.includes(id))];
-    await this.products.savePositions(restaurantId, new Map(ordered.map((id, index) => [id, index + 1])));
+    await this.auditor.run(actor, async () => {
+      const existing = await this.products.idsOf(actor.restaurantId);
+      const unknown = ids.filter((id) => !existing.includes(id));
+      if (unknown.length > 0) {
+        throw new ValidationError(`Produtos inexistentes: ${unknown.join(', ')}.`, 'ids');
+      }
+      const ordered = [...ids, ...existing.filter((id) => !ids.includes(id))];
+      await this.products.savePositions(actor.restaurantId, new Map(ordered.map((id, index) => [id, index + 1])));
+      return {
+        result: undefined,
+        audit: { action: 'product.reordered', entityType: 'product', entityId: null, changes: { after: { ids } } },
+      };
+    });
   }
 }
 
-/** Exclui o produto; as promoções dele saem junto (ON DELETE CASCADE no banco). */
+/** Exclui o produto; as promoções dele saem junto (ON DELETE CASCADE no banco), e o log conta quantas. */
 export class DeleteProductUseCase {
-  constructor(private readonly products: ProductRepository) {}
+  constructor(
+    private readonly products: ProductRepository,
+    private readonly promotions: PromotionRepository,
+    private readonly auditor: Auditor,
+  ) {}
 
-  async execute(restaurantId: number, id: number): Promise<void> {
-    if ((await this.products.find(restaurantId, id)) === null) {
-      throw ProductNotFound.withId(id);
-    }
-    await this.products.delete(restaurantId, id);
+  async execute(actor: Actor, id: number): Promise<void> {
+    await this.auditor.run(actor, async () => {
+      const product = await findOrFail(this.products, actor.restaurantId, id);
+      const promotionsDeleted = (await this.promotions.ofProduct(id)).length;
+      await this.products.delete(actor.restaurantId, id);
+      return {
+        result: undefined,
+        audit: {
+          action: 'product.deleted',
+          entityType: 'product',
+          entityId: id,
+          changes: { before: { ...snapshot(toProductOutput(product)), promotionsDeleted } },
+        },
+      };
+    });
   }
 }

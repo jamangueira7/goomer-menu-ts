@@ -9,23 +9,40 @@ import {
   UpdateProductUseCase,
 } from '../../src/product/application/product-use-cases.js';
 import { ProductNotFound } from '../../src/product/domain/product-repository.js';
+import { CreatePromotionUseCase } from '../../src/promotion/application/promotion-use-cases.js';
 import { ValidationError } from '../../src/shared/domain/errors.js';
-import { InMemoryProductRepository } from '../support/in-memory.js';
+import {
+  actorOf,
+  InMemoryAuditLog,
+  InMemoryProductRepository,
+  InMemoryPromotionRepository,
+} from '../support/in-memory.js';
+
+const admin = actorOf(1);
+const stranger = actorOf(2, 2, 'caio@izakaya.jp');
 
 describe('casos de uso de produto', () => {
   let products: InMemoryProductRepository;
+  let promotions: InMemoryPromotionRepository;
+  let audit: InMemoryAuditLog;
   let create: CreateProductUseCase;
 
   beforeEach(() => {
     products = new InMemoryProductRepository();
-    create = new CreateProductUseCase(products);
+    promotions = new InMemoryPromotionRepository(products);
+    audit = new InMemoryAuditLog();
+    create = new CreateProductUseCase(products, audit.auditor());
   });
 
-  const chopp = () => create.execute(1, { name: 'Chopp', priceCents: 1400, category: 'bebidas' });
+  const chopp = () => create.execute(admin, { name: 'Chopp', priceCents: 1400, category: 'bebidas' });
+  const update = () => new UpdateProductUseCase(products, audit.auditor());
+  const visibility = () => new ChangeProductVisibilityUseCase(products, audit.auditor());
+  const reorder = () => new ReorderProductsUseCase(products, audit.auditor());
+  const remove = () => new DeleteProductUseCase(products, promotions, audit.auditor());
 
-  it('cria na próxima posição e devolve a saída', async () => {
+  it('cria na próxima posição, devolve a saída e grava product.created', async () => {
     await chopp();
-    const output = await create.execute(1, {
+    const output = await create.execute(admin, {
       name: 'Feijoada',
       priceCents: 6500,
       category: 'pratos_principais',
@@ -42,14 +59,21 @@ describe('casos de uso de produto', () => {
       position: 2,
       availability: [{ weekday: 6, start: '11:00', end: '16:00' }],
     });
+    expect(audit.entries[1]).toMatchObject({
+      actor: admin,
+      action: 'product.created',
+      entityType: 'product',
+      entityId: 2,
+      changes: { after: { name: 'Feijoada', price: 6500, visible: false, position: 2 } },
+    });
   });
 
-  it('recusa categoria e janela inválidas', async () => {
-    await expect(create.execute(1, { name: 'X', priceCents: 100, category: 'lanches' })).rejects.toThrow(
+  it('recusa categoria e janela inválidas, sem gravar log', async () => {
+    await expect(create.execute(admin, { name: 'X', priceCents: 100, category: 'lanches' })).rejects.toThrow(
       ValidationError,
     );
     await expect(
-      create.execute(1, {
+      create.execute(admin, {
         name: 'X',
         priceCents: 100,
         category: 'bebidas',
@@ -57,39 +81,47 @@ describe('casos de uso de produto', () => {
       }),
     ).rejects.toThrow('Os minutos só aceitam 00, 15, 30 ou 45.');
     expect(products.items.size).toBe(0);
+    expect(audit.entries).toHaveLength(0);
   });
 
-  it('atualiza, detalha e muda a visibilidade só no restaurante dono', async () => {
+  it('atualiza, detalha e muda a visibilidade só no restaurante dono, com de/para no log', async () => {
     const { id } = await chopp();
-    const updated = await new UpdateProductUseCase(products).execute(1, id, {
-      name: 'Chopp 500 ml',
-      priceCents: 1900,
-      category: 'bebidas',
-    });
-    const hidden = await new ChangeProductVisibilityUseCase(products).execute(1, id, false);
-    const shown = await new ChangeProductVisibilityUseCase(products).execute(1, id, true);
+    const updated = await update().execute(admin, id, { name: 'Chopp 500 ml', priceCents: 1900, category: 'bebidas' });
+    const hidden = await visibility().execute(admin, id, false);
+    const shown = await visibility().execute(admin, id, true);
 
     expect(updated.name).toBe('Chopp 500 ml');
     expect(hidden.visible).toBe(false);
     expect(shown.visible).toBe(true);
     expect((await new GetProductUseCase(products).execute(1, id)).price).toBe(1900);
     await expect(new GetProductUseCase(products).execute(2, id)).rejects.toThrow(ProductNotFound);
-    await expect(new ChangeProductVisibilityUseCase(products).execute(2, id, false)).rejects.toThrow(ProductNotFound);
+    await expect(visibility().execute(stranger, id, false)).rejects.toThrow(ProductNotFound);
+
+    expect(audit.entries[1]?.changes).toEqual({
+      before: { name: 'Chopp', price: 1400 },
+      after: { name: 'Chopp 500 ml', price: 1900 },
+    });
+    expect(audit.entries[2]).toMatchObject({
+      action: 'product.visibility_changed',
+      changes: { before: { visible: true }, after: { visible: false } },
+    });
+    expect(audit.actions()).toHaveLength(4);
   });
 
-  it('atualizar produto de outro restaurante é 404', async () => {
+  it('atualizar produto de outro restaurante é 404 e não gera log', async () => {
     const { id } = await chopp();
 
-    await expect(
-      new UpdateProductUseCase(products).execute(2, id, { name: 'X', priceCents: 1, category: 'bebidas' }),
-    ).rejects.toThrow('Produto 1 não encontrado.');
+    await expect(update().execute(stranger, id, { name: 'X', priceCents: 1, category: 'bebidas' })).rejects.toThrow(
+      'Produto 1 não encontrado.',
+    );
+    expect(audit.actions()).toEqual(['product.created']);
   });
 
   it('lista com filtros e paginação', async () => {
     await chopp();
-    await create.execute(1, { name: 'Pudim', priceCents: 1800, category: 'sobremesas' });
-    await create.execute(1, { name: 'Água', priceCents: 500, category: 'bebidas', visible: false });
-    await create.execute(2, { name: 'De outro', priceCents: 500, category: 'bebidas' });
+    await create.execute(admin, { name: 'Pudim', priceCents: 1800, category: 'sobremesas' });
+    await create.execute(admin, { name: 'Água', priceCents: 500, category: 'bebidas', visible: false });
+    await create.execute(stranger, { name: 'De outro', priceCents: 500, category: 'bebidas' });
     const list = new ListProductsUseCase(products);
 
     expect((await list.execute(1)).total).toBe(3);
@@ -102,32 +134,47 @@ describe('casos de uso de produto', () => {
     await expect(list.execute(1, { category: 'lanches' })).rejects.toThrow(ValidationError);
   });
 
-  it('reordenar coloca os ids listados primeiro e mantém a ordem dos outros', async () => {
+  it('reordenar coloca os ids listados primeiro e registra a lista pedida', async () => {
     const a = (await chopp()).id;
-    const b = (await create.execute(1, { name: 'B', priceCents: 100, category: 'bebidas' })).id;
-    const c = (await create.execute(1, { name: 'C', priceCents: 100, category: 'bebidas' })).id;
+    const b = (await create.execute(admin, { name: 'B', priceCents: 100, category: 'bebidas' })).id;
+    const c = (await create.execute(admin, { name: 'C', priceCents: 100, category: 'bebidas' })).id;
 
-    await new ReorderProductsUseCase(products).execute(1, [c]);
+    await reorder().execute(admin, [c]);
 
     expect(await products.idsOf(1)).toEqual([c, a, b]);
+    expect(audit.entries.at(-1)).toMatchObject({
+      action: 'product.reordered',
+      entityId: null,
+      changes: { after: { ids: [c] } },
+    });
   });
 
   it('reordenar valida a lista de ids', async () => {
     const { id } = await chopp();
-    const reorder = new ReorderProductsUseCase(products);
-    const other = (await create.execute(2, { name: 'Outro', priceCents: 100, category: 'bebidas' })).id;
+    const other = (await create.execute(stranger, { name: 'Outro', priceCents: 100, category: 'bebidas' })).id;
 
-    await expect(reorder.execute(1, [])).rejects.toThrow('ao menos um id');
-    await expect(reorder.execute(1, [id, id])).rejects.toThrow('repetições');
-    await expect(reorder.execute(1, [id, 999, other])).rejects.toThrow('Produtos inexistentes: 999, 2.');
+    await expect(reorder().execute(admin, [])).rejects.toThrow('ao menos um id');
+    await expect(reorder().execute(admin, [id, id])).rejects.toThrow('repetições');
+    await expect(reorder().execute(admin, [id, 999, other])).rejects.toThrow('Produtos inexistentes: 999, 2.');
+    expect(audit.actions()).not.toContain('product.reordered');
   });
 
-  it('exclui só o que é do restaurante', async () => {
+  it('exclui só o que é do restaurante e conta as promoções que caíram junto', async () => {
     const { id } = await chopp();
-    const remove = new DeleteProductUseCase(products);
+    await new CreatePromotionUseCase(products, promotions, audit.auditor()).execute(admin, id, {
+      description: 'Happy hour',
+      priceCents: 700,
+      windows: [{ weekday: 3, start: '18:00', end: '20:00' }],
+    });
 
-    await expect(remove.execute(2, id)).rejects.toThrow(ProductNotFound);
-    await remove.execute(1, id);
+    await expect(remove().execute(stranger, id)).rejects.toThrow(ProductNotFound);
+    await remove().execute(admin, id);
+
     expect(products.items.size).toBe(0);
+    expect(audit.entries.at(-1)).toMatchObject({
+      action: 'product.deleted',
+      entityId: id,
+      changes: { before: { name: 'Chopp', price: 1400, promotionsDeleted: 1 } },
+    });
   });
 });
