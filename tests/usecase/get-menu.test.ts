@@ -5,7 +5,13 @@ import { CreateProductUseCase } from '../../src/product/application/product-use-
 import { CreatePromotionUseCase } from '../../src/promotion/application/promotion-use-cases.js';
 import { Timezone } from '../../src/shared/domain/timezone.js';
 import { FixedClock } from '../support/fixed-clock.js';
-import { InMemoryMenu, InMemoryProductRepository, InMemoryPromotionRepository } from '../support/in-memory.js';
+import {
+  actorOf,
+  InMemoryAuditLog,
+  InMemoryMenu,
+  InMemoryProductRepository,
+  InMemoryPromotionRepository,
+} from '../support/in-memory.js';
 
 describe('GetMenuUseCase (relógio fixo, fusos diferentes)', () => {
   let menu: InMemoryMenu;
@@ -19,24 +25,26 @@ describe('GetMenuUseCase (relógio fixo, fusos diferentes)', () => {
     menu.addRestaurant(new Restaurant(2, 'Izakaya', Timezone.fromString('Asia/Tokyo')));
     clock = new FixedClock(); // quarta, 18:30 em São Paulo
 
-    const create = new CreateProductUseCase(products);
-    const chopp = (await create.execute(1, { name: 'Chopp 300 ml', priceCents: 1400, category: 'bebidas' })).id;
-    await create.execute(1, { name: 'Pudim', priceCents: 1800, category: 'sobremesas' });
-    await create.execute(1, { name: 'Bolinho', priceCents: 3200, category: 'entradas' });
-    await create.execute(1, { name: 'Escondido', priceCents: 1000, category: 'entradas', visible: false });
-    await create.execute(1, {
+    const auditor = new InMemoryAuditLog().auditor();
+    const create = new CreateProductUseCase(products, auditor);
+    const chopp = (await create.execute(actorOf(1), { name: 'Chopp 300 ml', priceCents: 1400, category: 'bebidas' }))
+      .id;
+    await create.execute(actorOf(1), { name: 'Pudim', priceCents: 1800, category: 'sobremesas' });
+    await create.execute(actorOf(1), { name: 'Bolinho', priceCents: 3200, category: 'entradas' });
+    await create.execute(actorOf(1), { name: 'Escondido', priceCents: 1000, category: 'entradas', visible: false });
+    await create.execute(actorOf(1), {
       name: 'Feijoada',
       priceCents: 6500,
       category: 'pratos_principais',
       availability: [{ weekday: 6, start: '11:00', end: '16:00' }],
     });
-    await create.execute(2, {
+    await create.execute(actorOf(2, 2), {
       name: 'Lámen',
       priceCents: 4500,
       category: 'pratos_principais',
       availability: [{ weekday: 4, start: '06:00', end: '07:00' }],
     });
-    await new CreatePromotionUseCase(products, promotions).execute(1, chopp, {
+    await new CreatePromotionUseCase(products, promotions, auditor).execute(actorOf(1), chopp, {
       description: 'Happy hour: chopp pela metade do preço',
       priceCents: 700,
       windows: [{ weekday: 3, start: '18:00', end: '20:00' }],

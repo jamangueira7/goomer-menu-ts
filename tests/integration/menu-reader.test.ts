@@ -5,6 +5,10 @@ import { PgProductRepository } from '../../src/product/infrastructure/pg-product
 import { CreatePromotionUseCase } from '../../src/promotion/application/promotion-use-cases.js';
 import { PgPromotionRepository } from '../../src/promotion/infrastructure/pg-promotion-repository.js';
 import { Timezone } from '../../src/shared/domain/timezone.js';
+import { PgAuditLog, PgTransactionManager } from '../../src/audit/infrastructure/pg-audit.js';
+import { Auditor } from '../../src/shared/application/audit.js';
+import { FixedClock } from '../support/fixed-clock.js';
+import { actorOf } from '../support/in-memory.js';
 import { TestDatabase } from '../support/test-database.js';
 
 const saoPaulo = Timezone.fromString('America/Sao_Paulo');
@@ -16,21 +20,22 @@ describe('PgMenuReader (consulta única do cardápio no Postgres)', () => {
     const db = await TestDatabase.reset();
     reader = new PgMenuReader(db);
     const products = new PgProductRepository(db);
-    const create = new CreateProductUseCase(products);
-    const chopp = (await create.execute(1, { name: 'Chopp', priceCents: 1400, category: 'bebidas' })).id;
-    const agua = (await create.execute(1, { name: 'Água', priceCents: 500, category: 'bebidas' })).id;
-    await create.execute(1, { name: 'Pudim', priceCents: 1800, category: 'sobremesas' });
-    await create.execute(1, { name: 'Bolinho', priceCents: 3200, category: 'entradas' });
-    await create.execute(1, { name: 'Escondido', priceCents: 1000, category: 'entradas', visible: false });
-    await create.execute(1, {
+    const auditor = new Auditor(new PgAuditLog(db, new FixedClock()), new PgTransactionManager(db));
+    const create = new CreateProductUseCase(products, auditor);
+    const chopp = (await create.execute(actorOf(1), { name: 'Chopp', priceCents: 1400, category: 'bebidas' })).id;
+    const agua = (await create.execute(actorOf(1), { name: 'Água', priceCents: 500, category: 'bebidas' })).id;
+    await create.execute(actorOf(1), { name: 'Pudim', priceCents: 1800, category: 'sobremesas' });
+    await create.execute(actorOf(1), { name: 'Bolinho', priceCents: 3200, category: 'entradas' });
+    await create.execute(actorOf(1), { name: 'Escondido', priceCents: 1000, category: 'entradas', visible: false });
+    await create.execute(actorOf(1), {
       name: 'Feijoada',
       priceCents: 6500,
       category: 'pratos_principais',
       availability: [{ weekday: 6, start: '11:00', end: '16:00' }],
     });
-    await create.execute(2, { name: 'De outro restaurante', priceCents: 1000, category: 'bebidas' });
-    await new ReorderProductsUseCase(products).execute(1, [agua, chopp]);
-    await new CreatePromotionUseCase(products, new PgPromotionRepository(db)).execute(1, chopp, {
+    await create.execute(actorOf(2, 2), { name: 'De outro restaurante', priceCents: 1000, category: 'bebidas' });
+    await new ReorderProductsUseCase(products, auditor).execute(actorOf(1), [agua, chopp]);
+    await new CreatePromotionUseCase(products, new PgPromotionRepository(db), auditor).execute(actorOf(1), chopp, {
       description: 'Happy hour',
       priceCents: 700,
       windows: [{ weekday: 3, start: '18:00', end: '20:00' }],

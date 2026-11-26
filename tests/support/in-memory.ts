@@ -1,3 +1,13 @@
+import type { AuditLogReader, AuditSearch, StoredAuditEntry } from '../../src/audit/application/list-audit-logs.js';
+import {
+  Auditor,
+  type Actor,
+  type AuditEntry,
+  type AuditLog,
+  type TransactionManager,
+} from '../../src/shared/application/audit.js';
+import type { Clock } from '../../src/shared/domain/clock.js';
+import { FixedClock } from './fixed-clock.js';
 import type { AccessTokens, AuthContext, Mailer, ResetRequestThrottle } from '../../src/auth/application/ports.js';
 import { PasswordResetToken } from '../../src/auth/domain/password-reset-token.js';
 import type { PasswordResetTokenRepository } from '../../src/auth/domain/password-reset-token-repository.js';
@@ -244,16 +254,16 @@ export class AuthFakes implements AccessTokens, Mailer, ResetRequestThrottle, Pa
   readonly requests: { email: string; ip: string; at: Date }[] = [];
   readonly tokens = new Map<string, PasswordResetToken>();
 
-  issue(userId: number, restaurantId: number): Promise<string> {
-    return Promise.resolve(`token-${userId}-${restaurantId}`);
+  issue(userId: number, restaurantId: number, email: string): Promise<string> {
+    return Promise.resolve(`token-${userId}-${restaurantId}-${email}`);
   }
 
   verify(token: string): Promise<AuthContext> {
-    const match = /^token-(\d+)-(\d+)$/.exec(token);
+    const match = /^token-(\d+)-(\d+)-(.+)$/.exec(token);
     if (!match) {
       return Promise.reject(new Unauthenticated('Token inválido.'));
     }
-    return Promise.resolve({ userId: Number(match[1]), restaurantId: Number(match[2]) });
+    return Promise.resolve({ userId: Number(match[1]), restaurantId: Number(match[2]), email: String(match[3]) });
   }
 
   sendPasswordReset(to: string, name: string, link: string): Promise<void> {
@@ -307,4 +317,67 @@ export class AuthFakes implements AccessTokens, Mailer, ResetRequestThrottle, Pa
     }
     return token;
   }
+}
+
+/** Log de auditoria em memória: grava as entradas e responde às consultas do endpoint. */
+export class InMemoryAuditLog implements AuditLog, AuditLogReader, TransactionManager {
+  readonly entries: (AuditEntry & { at: Date })[] = [];
+
+  constructor(private readonly clock: Clock = new FixedClock()) {}
+
+  /** Sem banco não há rollback de verdade; a atomicidade é testada na integração. */
+  run<T>(work: () => Promise<T>): Promise<T> {
+    return work();
+  }
+
+  record(entry: AuditEntry): Promise<void> {
+    this.entries.push({ ...entry, at: this.clock.now() });
+    return Promise.resolve();
+  }
+
+  search(query: AuditSearch): Promise<{ items: StoredAuditEntry[]; total: number }> {
+    const matching = this.entries
+      .map((entry, index) => ({ entry, id: index + 1 }))
+      .filter(
+        ({ entry }) =>
+          entry.actor.restaurantId === query.restaurantId &&
+          entry.actor.userId === query.actorUserId &&
+          entry.at >= query.from &&
+          entry.at < query.until,
+      )
+      .reverse();
+    const start = (query.page - 1) * query.perPage;
+    return Promise.resolve({
+      total: matching.length,
+      items: matching.slice(start, start + query.perPage).map(({ entry, id }) => ({
+        id,
+        actorEmail: entry.actor.email,
+        action: entry.action,
+        entityType: entry.entityType,
+        entityId: entry.entityId,
+        changes: entry.changes,
+        ip: entry.actor.ip,
+        createdAt: entry.at,
+      })),
+    });
+  }
+
+  lastActorEmail(restaurantId: number, actorUserId: number): Promise<string | null> {
+    const last = this.entries.findLast((e) => e.actor.restaurantId === restaurantId && e.actor.userId === actorUserId);
+    return Promise.resolve(last?.actor.email ?? null);
+  }
+
+  /** Auditor que grava neste log, para montar os casos de uso nos testes. */
+  auditor(): Auditor {
+    return new Auditor(this, this);
+  }
+
+  actions(): string[] {
+    return this.entries.map((e) => e.action);
+  }
+}
+
+/** Ator padrão dos testes: o admin (usuário 1) do restaurante 1. */
+export function actorOf(restaurantId = 1, userId = 1, email = 'admin@bardojoao.com'): Actor {
+  return { userId, email, restaurantId, ip: '10.0.0.1' };
 }
