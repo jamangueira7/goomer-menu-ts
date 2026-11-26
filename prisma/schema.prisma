@@ -23,6 +23,7 @@ model Restaurant {
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   products  Product[]
   users     User[]
+  auditLogs AuditLog[]
 
   @@map("restaurants")
 }
@@ -110,6 +111,24 @@ model PasswordResetToken {
 
   @@index([userId], map: "password_reset_tokens_user_idx")
   @@map("password_reset_tokens")
+}
+
+/// Log de auditoria (só INSERT). actor_user_id sem FK: o log sobrevive à exclusão do usuário.
+model AuditLog {
+  id           BigInt     @id @default(autoincrement())
+  restaurantId BigInt     @map("restaurant_id")
+  actorUserId  BigInt     @map("actor_user_id")
+  actorEmail   String     @map("actor_email")
+  action       String
+  entityType   String     @map("entity_type")
+  entityId     BigInt?    @map("entity_id")
+  changes      Json       @default("{}")
+  ip           String?    @db.Inet
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, actorUserId, createdAt(sort: Desc)], map: "audit_logs_actor_idx")
+  @@map("audit_logs")
 }
 
 model PasswordResetRequest {

@@ -24,7 +24,7 @@ export const TestDatabase = {
     const db = TestDatabase.db();
     await db.query(
       `TRUNCATE restaurants, products, product_availability, promotions, promotion_windows, users,
-       password_reset_tokens, password_reset_requests RESTART IDENTITY CASCADE`,
+       password_reset_tokens, password_reset_requests, audit_logs RESTART IDENTITY CASCADE`,
     );
     await db.query(
       `INSERT INTO restaurants (id, name, timezone) VALUES
