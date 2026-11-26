@@ -1,0 +1,93 @@
+name: goomer-ts
+
+x-app-env: &app-env
+  APP_ENV: ${APP_ENV:-dev}
+  PORT: '8080'
+  DB_HOST: db
+  DB_PORT: '5432'
+  DB_NAME: ${DB_NAME:-goomer}
+  DB_USER: ${DB_USER:-goomer}
+  DB_PASSWORD: ${DB_PASSWORD:-goomer}
+  # Só o Prisma Migrate lê esta URL; a API monta a conexão com as variáveis DB_*.
+  DATABASE_URL: postgresql://${DB_USER:-goomer}:${DB_PASSWORD:-goomer}@db:5432/${DB_NAME:-goomer}
+  JWT_SECRET: ${JWT_SECRET:-dev-only-secret-troque-em-producao-32+}
+  APP_RESET_URL: ${APP_RESET_URL:-http://localhost:8091/reset-password}
+  MAILER_DSN: ${MAILER_DSN:-smtp://mailpit:1025}
+  MAIL_FROM: ${MAIL_FROM:-Goomer Menu <no-reply@goomer.local>}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-goomer}
+      POSTGRES_USER: ${DB_USER:-goomer}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-goomer}
+    # Sem porta publicada no host (a 5432 costuma estar ocupada); acesse com `docker compose exec db psql -U goomer`.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+      target: prod
+    image: goomer-ts:prod
+    environment: *app-env
+    command: ['sh', '-c', 'node_modules/.bin/prisma migrate deploy && node dist/bin/seed.js']
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    build:
+      context: .
+      target: prod
+    image: goomer-ts:prod
+    environment: *app-env
+    ports:
+      - '8091:8080'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - '8027:8025'
+
+  # Ferramentas e testes (perfil "test"): `docker compose --profile test run --rm test npm test`.
+  # O Postgres dos testes de integração e ponta a ponta sobe via Testcontainers, pelo socket do Docker.
+  test:
+    profiles: ['test']
+    build:
+      context: .
+      target: build
+    image: goomer-ts:build
+    user: '1000:1000'
+    group_add:
+      - ${DOCKER_GID:-999}
+    environment:
+      <<: *app-env
+      APP_ENV: test
+      JWT_SECRET: test-secret-com-pelo-menos-32-caracteres
+      MAILPIT_URL: http://mailpit:8025
+      APP_RESET_URL: http://localhost:8091/reset-password
+    volumes:
+      - .:/app
+      # node_modules vem da imagem (glibc, binários do argon2 e do Prisma), não do host.
+      - /app/node_modules
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      mailpit:
+        condition: service_started
+
+volumes:
+  pgdata:
