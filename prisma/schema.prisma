@@ -1,0 +1,124 @@
+// Prisma Migrate só para o esquema: as consultas da API são SQL à mão com o driver `pg`, e o Prisma Client não é
+// gerado nem usado (por isso não há bloco `generator`). Os modelos abaixo documentam as tabelas; o que o Prisma não
+// sabe expressar (EXCLUDE USING gist, CHECKs, a função minute_of_day) está escrito à mão em migrations/*/migration.sql.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProductCategory {
+  entradas
+  pratos_principais
+  sobremesas
+  bebidas
+
+  @@map("product_category")
+}
+
+model Restaurant {
+  id        BigInt    @id @default(autoincrement())
+  name      String
+  timezone  String    @default("America/Sao_Paulo")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  products  Product[]
+  users     User[]
+
+  @@map("restaurants")
+}
+
+model Product {
+  id           BigInt                @id @default(autoincrement())
+  restaurantId BigInt                @map("restaurant_id")
+  name         String
+  priceCents   Int                   @map("price_cents")
+  category     ProductCategory
+  visible      Boolean               @default(true)
+  position     Int                   @default(0)
+  createdAt    DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime              @default(now()) @map("updated_at") @db.Timestamptz(6)
+  restaurant   Restaurant            @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  availability ProductAvailability[]
+  promotions   Promotion[]
+
+  @@index([restaurantId, visible, category, position], map: "products_menu_idx")
+  @@map("products")
+}
+
+model ProductAvailability {
+  productId BigInt   @map("product_id")
+  weekday   Int      @db.SmallInt
+  startTime DateTime @map("start_time") @db.Time(0)
+  endTime   DateTime @map("end_time") @db.Time(0)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([productId, weekday, startTime])
+  @@map("product_availability")
+}
+
+model Promotion {
+  id              BigInt            @id @default(autoincrement())
+  productId       BigInt            @map("product_id")
+  description     String
+  promoPriceCents Int               @map("promo_price_cents")
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+  product         Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  windows         PromotionWindow[]
+
+  @@unique([id, productId], map: "promotions_id_product_key")
+  @@index([productId], map: "promotions_product_idx")
+  @@map("promotions")
+}
+
+/// Repete o product_id para o EXCLUDE USING gist comparar janelas de promoções diferentes do mesmo produto.
+model PromotionWindow {
+  promotionId BigInt    @map("promotion_id")
+  productId   BigInt    @map("product_id")
+  weekday     Int       @db.SmallInt
+  startTime   DateTime  @map("start_time") @db.Time(0)
+  endTime     DateTime  @map("end_time") @db.Time(0)
+  promotion   Promotion @relation(fields: [promotionId, productId], references: [id, productId], onDelete: Cascade, map: "promotion_windows_promotion_fk")
+
+  @@id([promotionId, weekday, startTime])
+  @@map("promotion_windows")
+}
+
+model User {
+  id           BigInt               @id @default(autoincrement())
+  restaurantId BigInt               @map("restaurant_id")
+  name         String
+  email        String               @unique(map: "users_email_key")
+  passwordHash String               @map("password_hash")
+  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime             @default(now()) @map("updated_at") @db.Timestamptz(6)
+  restaurant   Restaurant           @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  resetTokens  PasswordResetToken[]
+
+  @@index([restaurantId], map: "users_restaurant_idx")
+  @@map("users")
+}
+
+model PasswordResetToken {
+  id        BigInt    @id @default(autoincrement())
+  userId    BigInt    @map("user_id")
+  tokenHash String    @unique(map: "password_reset_tokens_hash_key") @map("token_hash") @db.Char(64)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "password_reset_tokens_user_idx")
+  @@map("password_reset_tokens")
+}
+
+model PasswordResetRequest {
+  id          BigInt   @id @default(autoincrement())
+  email       String
+  ip          String
+  requestedAt DateTime @map("requested_at") @db.Timestamptz(6)
+
+  @@index([email, requestedAt], map: "password_reset_requests_email_idx")
+  @@index([ip, requestedAt], map: "password_reset_requests_ip_idx")
+  @@map("password_reset_requests")
+}
