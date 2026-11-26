@@ -1,4 +1,5 @@
 import type { FastifyRequest, onRequestAsyncHookHandler } from 'fastify';
+import type { Actor } from '../../shared/application/audit.js';
 import { Unauthenticated } from '../../shared/application/errors.js';
 import type { AccessTokens, AuthContext } from '../application/ports.js';
 
@@ -27,4 +28,9 @@ export function authOf(request: FastifyRequest): AuthContext {
     throw new Unauthenticated('Requisição sem autenticação.');
   }
   return request.auth;
+}
+
+/** Quem faz a escrita, para o log de auditoria: o usuário do token mais o IP da requisição. */
+export function actorOf(request: FastifyRequest): Actor {
+  return { ...authOf(request), ip: request.ip };
 }

@@ -48,7 +48,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps): void {
     { schema: { tags, summary: 'Define a nova senha com o token do e-mail', body: ResetBody } },
     async (request, reply) => {
       const body = bodyOf(request, ResetBody);
-      await deps.resetPassword.execute(body.token, body.password);
+      await deps.resetPassword.execute(body.token, body.password, request.ip);
       return reply.code(204).send();
     },
   );

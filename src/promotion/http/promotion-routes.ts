@@ -1,6 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
-import { authOf } from '../../auth/http/jwt-guard.js';
+import { actorOf, authOf } from '../../auth/http/jwt-guard.js';
 import { bodyOf, intFromQuery, QueryInt, queryOf, routeId, WindowSchema } from '../../shared/http/http-kit.js';
 import type {
   CreatePromotionUseCase,
@@ -50,7 +50,7 @@ export function promotionRoutes(app: FastifyInstance, deps: PromotionRouteDeps):
     { schema: { tags, security, summary: 'Cria promoção (409 se a janela se sobrepõe)', body: CreateBody } },
     async (request, reply) => {
       const body = bodyOf(request, CreateBody);
-      const output = await deps.create.execute(authOf(request).restaurantId, body.productId, promotionData(body));
+      const output = await deps.create.execute(actorOf(request), body.productId, promotionData(body));
       return reply.code(201).header('Location', `/api/v1/promotions/${output.id}`).send(output);
     },
   );
@@ -64,19 +64,14 @@ export function promotionRoutes(app: FastifyInstance, deps: PromotionRouteDeps):
     {
       schema: { tags, security, summary: 'Atualiza descrição, preço e janelas', params: IdParams, body: PromotionBody },
     },
-    (request) =>
-      deps.update.execute(
-        authOf(request).restaurantId,
-        routeId(request),
-        promotionData(bodyOf(request, PromotionBody)),
-      ),
+    (request) => deps.update.execute(actorOf(request), routeId(request), promotionData(bodyOf(request, PromotionBody))),
   );
 
   app.delete(
     '/promotions/:id',
     { schema: { tags, security, summary: 'Exclui a promoção', params: IdParams } },
     async (request, reply) => {
-      await deps.delete.execute(authOf(request).restaurantId, routeId(request));
+      await deps.delete.execute(actorOf(request), routeId(request));
       return reply.code(204).send();
     },
   );

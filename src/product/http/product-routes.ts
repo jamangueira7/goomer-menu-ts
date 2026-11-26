@@ -1,6 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
-import { authOf } from '../../auth/http/jwt-guard.js';
+import { actorOf, authOf } from '../../auth/http/jwt-guard.js';
 import { bodyOf, intFromQuery, QueryInt, queryOf, routeId, WindowSchema } from '../../shared/http/http-kit.js';
 import type { ProductData } from '../application/product-dto.js';
 import type {
@@ -74,7 +74,7 @@ export function productRoutes(app: FastifyInstance, deps: ProductRouteDeps): voi
     '/products',
     { schema: { tags, security, summary: 'Cria produto (201 com Location)', body: ProductBody } },
     async (request, reply) => {
-      const output = await deps.create.execute(authOf(request).restaurantId, productData(bodyOf(request, ProductBody)));
+      const output = await deps.create.execute(actorOf(request), productData(bodyOf(request, ProductBody)));
       return reply.code(201).header('Location', `/api/v1/products/${output.id}`).send(output);
     },
   );
@@ -83,7 +83,7 @@ export function productRoutes(app: FastifyInstance, deps: ProductRouteDeps): voi
     '/products/order',
     { schema: { tags, security, summary: 'Define a ordem dos produtos no cardápio', body: OrderBody } },
     async (request, reply) => {
-      await deps.reorder.execute(authOf(request).restaurantId, bodyOf(request, OrderBody).ids);
+      await deps.reorder.execute(actorOf(request), bodyOf(request, OrderBody).ids);
       return reply.code(204).send();
     },
   );
@@ -95,22 +95,20 @@ export function productRoutes(app: FastifyInstance, deps: ProductRouteDeps): voi
   app.put(
     '/products/:id',
     { schema: { tags, security, summary: 'Atualiza o produto inteiro', params: IdParams, body: ProductBody } },
-    (request) =>
-      deps.update.execute(authOf(request).restaurantId, routeId(request), productData(bodyOf(request, ProductBody))),
+    (request) => deps.update.execute(actorOf(request), routeId(request), productData(bodyOf(request, ProductBody))),
   );
 
   app.patch(
     '/products/:id/visibility',
     { schema: { tags, security, summary: 'Mostra ou esconde no cardápio', params: IdParams, body: VisibilityBody } },
-    (request) =>
-      deps.visibility.execute(authOf(request).restaurantId, routeId(request), bodyOf(request, VisibilityBody).visible),
+    (request) => deps.visibility.execute(actorOf(request), routeId(request), bodyOf(request, VisibilityBody).visible),
   );
 
   app.delete(
     '/products/:id',
     { schema: { tags, security, summary: 'Exclui o produto e as promoções dele', params: IdParams } },
     async (request, reply) => {
-      await deps.delete.execute(authOf(request).restaurantId, routeId(request));
+      await deps.delete.execute(actorOf(request), routeId(request));
       return reply.code(204).send();
     },
   );

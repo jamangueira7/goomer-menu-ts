@@ -1,6 +1,6 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
-import { authOf } from '../../auth/http/jwt-guard.js';
+import { actorOf, authOf } from '../../auth/http/jwt-guard.js';
 import { bodyOf, routeId } from '../../shared/http/http-kit.js';
 import type { CreateUserUseCase, DeleteUserUseCase, ListUsersUseCase } from '../application/user-use-cases.js';
 
@@ -29,7 +29,11 @@ export function userRoutes(app: FastifyInstance, deps: UserRouteDeps): void {
     '/users',
     { schema: { tags, security, summary: 'Cadastra usuário (409 se o e-mail já existe)', body: UserBody } },
     async (request, reply) => {
-      const output = await deps.create.execute(authOf(request).restaurantId, bodyOf(request, UserBody));
+      const output = await deps.create.execute(
+        authOf(request).restaurantId,
+        bodyOf(request, UserBody),
+        actorOf(request),
+      );
       return reply.code(201).header('Location', `/api/v1/users/${output.id}`).send(output);
     },
   );
@@ -38,8 +42,7 @@ export function userRoutes(app: FastifyInstance, deps: UserRouteDeps): void {
     '/users/:id',
     { schema: { tags, security, summary: 'Remove um usuário (422 para si mesmo)', params: IdParams } },
     async (request, reply) => {
-      const auth = authOf(request);
-      await deps.delete.execute(auth.restaurantId, auth.userId, routeId(request));
+      await deps.delete.execute(actorOf(request), routeId(request));
       return reply.code(204).send();
     },
   );
