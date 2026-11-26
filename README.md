@@ -6,7 +6,8 @@ sozinha.
 
 É a versão em TypeScript do desafio técnico da Goomer, a trilha 1 do plano: Node 22, Fastify, SQL escrito à mão e
 testes em quatro níveis. O plano completo, com as mesmas regras em PHP e Java, está em
-[`docs/visao-geral.md`](docs/visao-geral.md).
+[`docs/visao-geral.md`](docs/visao-geral.md). A versão em PHP está em
+[jamangueira7/goomer-menu-php](https://github.com/jamangueira7/goomer-menu-php).
 
 **Destaques**
 
@@ -53,7 +54,7 @@ testes em quatro níveis. O plano completo, com as mesmas regras em PHP e Java, 
 Só precisa de Docker. Não é preciso ter Node instalado.
 
 ```bash
-git clone <url-do-repositório> goomer-menu-ts && cd goomer-menu-ts
+git clone https://github.com/jamangueira7/goomer-menu-ts.git && cd goomer-menu-ts
 docker compose up -d --build
 curl -s http://localhost:8091/api/v1/restaurants/1/menu
 ```
