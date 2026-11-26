@@ -1,0 +1,52 @@
+{
+  "name": "goomer-menu-ts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Goomer Menu API em TypeScript: produtos, promoções com dia e hora e cardápio no fuso do restaurante.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/src/server.js",
+    "migrate": "prisma migrate deploy",
+    "seed": "node dist/bin/seed.js",
+    "create-admin": "node dist/bin/create-admin.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "depcruise": "depcruise src bin --config .dependency-cruiser.cjs",
+    "check": "npm run lint && npm run typecheck && npm run depcruise",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit --project usecase",
+    "test:integration": "vitest run --project integration --project e2e",
+    "coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@fastify/swagger": "^9.9.5",
+    "@fastify/swagger-ui": "^5.2.6",
+    "@sinclair/typebox": "^0.34.52",
+    "argon2": "^0.45.2",
+    "fastify": "^5.12.8",
+    "jose": "^6.2.18",
+    "nodemailer": "^7.0.13",
+    "pg": "^8.23.1",
+    "prisma": "^6.19.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@testcontainers/postgresql": "^12.2.2",
+    "@types/node": "^22.20.7",
+    "@types/nodemailer": "^8.0.2",
+    "@types/pg": "^8.23.1",
+    "@vitest/coverage-v8": "^3.2.7",
+    "dependency-cruiser": "^18.9.0",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.10.1",
+    "typescript": "~5.9",
+    "typescript-eslint": "^8.74.0",
+    "vitest": "^3.2.7"
+  }
+}
